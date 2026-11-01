@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>mGBA Web</title>
+  <!-- GitHub Pages など COOP/COEP ヘッダを設定できないホストでも動かすため、
+       Service Worker でヘッダを付与する。既に分離済みの環境では何もしない。 -->
+  <script src="./coi-serviceworker.js"></script>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%237c5cff'/%3E%3Crect x='6' y='9' width='20' height='14' rx='2' fill='%23fff'/%3E%3C/svg%3E" />
+  <style>
+    :root {
+      --bg: #15171c;
+      --panel: #1f2229;
+      --panel-2: #272b34;
+      --border: #363b47;
+      --text: #e8eaf0;
+      --muted: #9aa1b2;
+      --accent: #7c5cff;
+      --accent-2: #5fd0a8;
+      --danger: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Sans", "Noto Sans JP", sans-serif;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+    header .version { color: var(--muted); font-size: 12px; }
+
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      padding: 16px;
+    }
+
+    /* 画面 + ドロップゾーン */
+    #screen-wrap {
+      position: relative;
+      width: 100%;
+      max-width: 720px;
+      aspect-ratio: 3 / 2;
+      background: #000;
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    #screen-wrap.dragover {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 4px rgba(124, 92, 255, .25);
+    }
+    #screen-wrap.playing { border-style: solid; }
+    #screen-wrap:fullscreen {
+      max-width: none;
+      border: none;
+      border-radius: 0;
+      aspect-ratio: auto;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      outline: none;
+    }
+    #screen-wrap:not(.playing) canvas { visibility: hidden; position: absolute; }
+
+    #placeholder {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      text-align: center;
+      padding: 24px;
+      pointer-events: none;
+    }
+    #placeholder .big { font-size: 20px; font-weight: 600; }
+    #placeholder .sub { color: var(--muted); font-size: 14px; }
+    #placeholder .ext { color: var(--muted); font-size: 12px; }
+    #screen-wrap.playing #placeholder { display: none; }
+
+    #open-btn-overlay { pointer-events: auto; }
+
+    /* コントロール */
+    .toolbar {
+      width: 100%;
+      max-width: 720px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+    }
+    .toolbar .spacer { flex: 1; }
+    .group { display: flex; align-items: center; gap: 6px; }
+    .group label { font-size: 12px; color: var(--muted); }
+
+    button, select {
+      appearance: none;
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background .12s, border-color .12s;
+    }
+    button:hover:not(:disabled), select:hover:not(:disabled) { border-color: var(--accent); }
+    button:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+    button.primary:hover:not(:disabled) { filter: brightness(1.1); }
+    button.active { border-color: var(--accent-2); color: var(--accent-2); }
+    input[type="range"] { width: 110px; accent-color: var(--accent); }
+
+    #status {
+      width: 100%;
+      max-width: 720px;
+      font-size: 13px;
+      color: var(--muted);
+      min-height: 1.2em;
+    }
+    #status.error { color: var(--danger); }
+
+    details {
+      width: 100%;
+      max-width: 720px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 13px;
+    }
+    details summary { cursor: pointer; color: var(--muted); }
+    table { border-collapse: collapse; margin-top: 8px; width: 100%; }
+    td { padding: 4px 8px; border-bottom: 1px solid var(--border); }
+    td:first-child { color: var(--muted); width: 40%; }
+    kbd {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-bottom-width: 2px;
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+    }
+
+    input[type="file"] { display: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>mGBA Web</h1>
+    <span class="version" id="version">読み込み中…</span>
+  </header>
+
+  <main>
+    <div id="screen-wrap">
+      <canvas id="canvas" width="240" height="160" tabindex="0"></canvas>
+      <div id="placeholder">
+        <div class="big">ここにROMをドラッグ＆ドロップ</div>
+        <div class="sub">または</div>
+        <button id="open-btn-overlay" class="primary" type="button" disabled>ROMを開く</button>
+        <div class="ext">対応形式: .gba / .gbc / .gb / .zip / .7z （.sav / .ss0〜 もドロップで取り込めます）</div>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <button id="open-btn" class="primary" type="button" disabled>ROMを開く</button>
+      <button id="pause-btn" type="button" disabled>一時停止</button>
+      <button id="reset-btn" type="button" disabled>リセット</button>
+      <button id="ff-btn" type="button" disabled>早送り ×1</button>
+      <button id="quit-btn" type="button" disabled>終了</button>
+
+      <div class="spacer"></div>
+
+      <div class="group">
+        <label for="slot">スロット</label>
+        <select id="slot" disabled>
+          <option value="1">1</option><option value="2">2</option><option value="3">3</option>
+          <option value="4">4</option><option value="5">5</option>
+        </select>
+        <button id="save-state-btn" type="button" disabled>セーブ</button>
+        <button id="load-state-btn" type="button" disabled>ロード</button>
+      </div>
+
+      <div class="group">
+        <label for="volume">音量</label>
+        <input id="volume" type="range" min="0" max="100" value="100" disabled />
+      </div>
+
+      <button id="export-sav-btn" type="button" disabled title="ゲーム内セーブ(.sav)をダウンロード">.sav書き出し</button>
+      <button id="fullscreen-btn" type="button" disabled>全画面</button>
+    </div>
+
+    <div id="status"></div>
+
+    <details>
+      <summary>キー操作</summary>
+      <table>
+        <tr><td>十字キー</td><td><kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd></td></tr>
+        <tr><td>A / B</td><td><kbd>X</kbd> / <kbd>Z</kbd></td></tr>
+        <tr><td>L / R</td><td><kbd>A</kbd> / <kbd>S</kbd></td></tr>
+        <tr><td>START / SELECT</td><td><kbd>Enter</kbd> / <kbd>Backspace</kbd></td></tr>
+        <tr><td>一時停止 / 再開</td><td><kbd>P</kbd></td></tr>
+        <tr><td>早送り切替</td><td><kbd>Space</kbd></td></tr>
+        <tr><td>ステートセーブ / ロード</td><td><kbd>F5</kbd> / <kbd>F8</kbd>（選択中スロット）</td></tr>
+      </table>
+    </details>
+  </main>
+
+  <input id="file-input" type="file" accept=".gba,.gbc,.gb,.zip,.7z,.sav,.ss0,.ss1,.ss2,.ss3,.ss4,.ss5,.ss6,.ss7,.ss8,.ss9" multiple />
+
+  <script type="module">
+    import mGBA from "./mgba.js";
+
+    const $ = (id) => document.getElementById(id);
+    const canvas = $("canvas");
+    const screenWrap = $("screen-wrap");
+    const statusEl = $("status");
+    const fileInput = $("file-input");
+
+    const ROM_EXT = ["gba", "gbc", "gb", "zip", "7z"];
+    const SAVE_EXT = /^(sav|ss\d+)$/;
+
+    const controls = ["open-btn", "open-btn-overlay", "pause-btn", "reset-btn", "ff-btn", "quit-btn", "slot",
+      "save-state-btn", "load-state-btn", "volume", "export-sav-btn", "fullscreen-btn"].map($);
+    const gameControls = ["pause-btn", "reset-btn", "ff-btn", "quit-btn", "slot", "save-state-btn",
+      "load-state-btn", "export-sav-btn", "fullscreen-btn"].map($);
+
+    let Module = null;
+    let paused = false;
+    let fastForward = false;
+    let gameLoaded = false;
+
+    function setStatus(msg, isError = false) {
+      statusEl.textContent = msg;
+      statusEl.classList.toggle("error", isError);
+      (isError ? console.error : console.log)("[mGBA Web]", msg);
+    }
+
+    function updateControls() {
+      const ready = Module !== null;
+      controls.forEach((el) => (el.disabled = !ready));
+      gameControls.forEach((el) => (el.disabled = !(ready && gameLoaded)));
+      $("pause-btn").textContent = paused ? "再開" : "一時停止";
+      $("pause-btn").classList.toggle("active", paused);
+      $("ff-btn").textContent = fastForward ? "早送り ×4" : "早送り ×1";
+      $("ff-btn").classList.toggle("active", fastForward);
+    }
+
+    // ---------- 初期化 ----------
+    if (!crossOriginIsolated) {
+      setStatus("このページは Cross-Origin Isolation が有効ではありません。COOP/COEP ヘッダ付きで配信してください（npm start）。", true);
+    }
+
+    try {
+      Module = await mGBA({ canvas });
+      await Module.FSInit();
+      $("version").textContent = `${Module.version.projectName} ${Module.version.projectVersion}`;
+      Module.setCoreSettings({ autoSaveStateEnable: false, restoreAutoSaveStateOnLoad: false });
+      Module.setLogger((entry) => {
+        if (entry.level === "ERROR" || entry.level === "FATAL" || entry.level === "GAME ERROR") {
+          console.warn(`[mGBA ${entry.level}] ${entry.category}: ${entry.message}`);
+        }
+      });
+      Module.addCoreCallbacks({
+        coreCrashedCallback: () => setStatus("エミュレーションコアがクラッシュしました。", true),
+      });
+      setStatus("準備完了。ROMをドロップするか「ROMを開く」から選択してください。");
+    } catch (e) {
+      setStatus(`mGBAの初期化に失敗しました: ${e?.message ?? e}`, true);
+      console.error(e);
+    }
+    updateControls();
+
+    // ---------- ファイル取り込み ----------
+    function extOf(name) {
+      const i = name.lastIndexOf(".");
+      return i < 0 ? "" : name.slice(i + 1).toLowerCase();
+    }
+
+    const uploadRom = (file) => new Promise((res) => Module.uploadRom(file, res));
+    const uploadSave = (file) => new Promise((res) => Module.uploadSaveOrSaveState(file, res));
+
+    async function handleFiles(fileList) {
+      if (!Module) return;
+      const files = Array.from(fileList);
+      const roms = files.filter((f) => ROM_EXT.includes(extOf(f.name)));
+      const saves = files.filter((f) => SAVE_EXT.test(extOf(f.name)));
+      const unknown = files.filter((f) => !roms.includes(f) && !saves.includes(f));
+
+      if (unknown.length) {
+        setStatus(`未対応のファイル: ${unknown.map((f) => f.name).join(", ")}`, true);
+      }
+
+      // セーブ類はROMより先に書き込む（ROM起動時に .sav が参照されるため）
+      for (const f of saves) {
+        await uploadSave(f);
+        setStatus(`${f.name} を取り込みました。`);
+      }
+
+      if (roms.length > 1) {
+        setStatus(`ROMは1つずつ読み込んでください（${roms[0].name} を使用します）。`);
+      }
+      if (roms.length) {
+        await startRom(roms[0]);
+      } else if (saves.length && gameLoaded) {
+        // 実行中ゲームへのセーブ反映はリロードが必要
+        Module.quickReload();
+        setStatus(`セーブデータを取り込み、ゲームをリロードしました。`);
+      }
+      await Module.FSSync().catch(() => {});
+    }
+
+    async function startRom(file) {
+      setStatus(`${file.name} を読み込み中…`);
+      if (gameLoaded) {
+        Module.quitGame();
+        gameLoaded = false;
+      }
+      await uploadRom(file);
+      const romPath = `${Module.filePaths().gamePath}/${file.name}`;
+      const ok = Module.loadGame(romPath);
+      if (!ok) {
+        setStatus(`${file.name} の起動に失敗しました。ROMファイルが壊れているか未対応です。`, true);
+        screenWrap.classList.remove("playing");
+        updateControls();
+        return;
+      }
+      gameLoaded = true;
+      paused = false;
+      fastForward = false;
+      Module.setFastForwardMultiplier(1);
+      Module.setVolume(Number($("volume").value) / 100);
+      // ブラウザの自動再生制限に備えてオーディオを明示的に再開
+      Module.resumeAudio();
+      Module.SDL2?.audioContext?.resume?.().catch(() => {});
+      screenWrap.classList.add("playing");
+      document.title = `${file.name} - mGBA Web`;
+      setStatus(`${file.name} を起動しました。`);
+      updateControls();
+      canvas.focus();
+    }
+
+    // 「開く」ボタン
+    const openPicker = () => fileInput.click();
+    $("open-btn").addEventListener("click", openPicker);
+    $("open-btn-overlay").addEventListener("click", openPicker);
+    fileInput.addEventListener("change", async () => {
+      if (fileInput.files?.length) await handleFiles(fileInput.files);
+      fileInput.value = "";
+    });
+
+    // ドラッグ＆ドロップ（ページ全体で受け付け、画面枠をハイライト）
+    let dragDepth = 0;
+    document.addEventListener("dragenter", (e) => {
+      e.preventDefault();
+      dragDepth++;
+      screenWrap.classList.add("dragover");
+    });
+    document.addEventListener("dragleave", (e) => {
+      e.preventDefault();
+      if (--dragDepth <= 0) {
+        dragDepth = 0;
+        screenWrap.classList.remove("dragover");
+      }
+    });
+    document.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    });
+    document.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      dragDepth = 0;
+      screenWrap.classList.remove("dragover");
+      if (e.dataTransfer?.files?.length) await handleFiles(e.dataTransfer.files);
+    });
+
+    // ---------- 操作ボタン ----------
+    function togglePause() {
+      if (!gameLoaded) return;
+      paused = !paused;
+      if (paused) Module.pauseGame();
+      else Module.resumeGame();
+      setStatus(paused ? "一時停止中" : "再開しました。");
+      updateControls();
+    }
+    function toggleFastForward() {
+      if (!gameLoaded) return;
+      fastForward = !fastForward;
+      Module.setFastForwardMultiplier(fastForward ? 4 : 1);
+      updateControls();
+    }
+    async function quitGame() {
+      if (!gameLoaded) return;
+      if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
+      // 終了前にセーブデータをIndexedDBへ書き出してから停止する
+      await Module.FSSync().catch(() => {});
+      Module.quitGame();
+      gameLoaded = false;
+      paused = false;
+      fastForward = false;
+      screenWrap.classList.remove("playing");
+      document.title = "mGBA Web";
+      setStatus("ゲームを終了しました。別のROMをドロップするか「ROMを開く」から選択してください。");
+      updateControls();
+    }
+    function saveState() {
+      if (!gameLoaded) return;
+      const slot = Number($("slot").value);
+      const ok = Module.saveState(slot);
+      setStatus(ok ? `スロット${slot}にステートセーブしました。` : `スロット${slot}へのセーブに失敗しました。`, !ok);
+      if (ok) Module.FSSync().catch(() => {});
+    }
+    function loadState() {
+      if (!gameLoaded) return;
+      const slot = Number($("slot").value);
+      const ok = Module.loadState(slot);
+      setStatus(ok ? `スロット${slot}からロードしました。` : `スロット${slot}にステートがありません。`, !ok);
+    }
+
+    $("pause-btn").addEventListener("click", togglePause);
+    $("reset-btn").addEventListener("click", () => {
+      if (!gameLoaded) return;
+      Module.quickReload();
+      paused = false;
+      setStatus("リセットしました。");
+      updateControls();
+    });
+    $("ff-btn").addEventListener("click", toggleFastForward);
+    $("quit-btn").addEventListener("click", quitGame);
+    $("save-state-btn").addEventListener("click", saveState);
+    $("load-state-btn").addEventListener("click", loadState);
+    $("volume").addEventListener("input", (e) => {
+      Module?.setVolume(Number(e.target.value) / 100);
+    });
+    $("export-sav-btn").addEventListener("click", async () => {
+      if (!gameLoaded) return;
+      await Module.FSSync().catch(() => {});
+      const data = Module.getSave();
+      if (!data || !data.length) {
+        setStatus("書き出せるセーブデータがありません（ゲーム内でセーブしてから再度お試しください）。", true);
+        return;
+      }
+      const name = (Module.saveName ?? "game.sav").split("/").pop();
+      const url = URL.createObjectURL(new Blob([data], { type: "application/octet-stream" }));
+      const a = Object.assign(document.createElement("a"), { href: url, download: name });
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setStatus(`${name} をダウンロードしました。`);
+    });
+    $("fullscreen-btn").addEventListener("click", () => {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else screenWrap.requestFullscreen?.();
+    });
+
+    // ---------- ショートカットキー ----------
+    document.addEventListener("keydown", (e) => {
+      if (!gameLoaded) return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      switch (e.key) {
+        case "p": case "P": e.preventDefault(); togglePause(); break;
+        case " ": e.preventDefault(); toggleFastForward(); break;
+        case "F5": e.preventDefault(); saveState(); break;
+        case "F8": e.preventDefault(); loadState(); break;
+      }
+    });
+
+    // タブが非表示になったら音だけ止める（復帰時に再開）
+    document.addEventListener("visibilitychange", () => {
+      if (!gameLoaded || paused) return;
+      if (document.hidden) Module.pauseAudio();
+      else Module.resumeAudio();
+    });
+
+    // 離脱時にセーブデータをIndexedDBへ書き出す
+    window.addEventListener("beforeunload", () => {
+      if (Module) Module.FSSync().catch(() => {});
+    });
+  </script>
+</body>
+</html>
